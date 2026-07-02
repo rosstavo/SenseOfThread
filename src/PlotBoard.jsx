@@ -194,7 +194,29 @@ export default class PlotBoard extends React.Component {
     const cur = this.state.view === "thread" ? m.thread : m.char;
     if (cur === key) return;
     this.pushUndo();
-    if (this.state.view === "thread") m.thread = key; else m.char = key;
+    // Re-home on the current axis, and drop the new home from that axis's
+    // co-appearance list so a block never echoes into its own home row.
+    if (this.state.view === "thread") {
+      m.thread = key;
+      if (Array.isArray(m.coThreads)) m.coThreads = m.coThreads.filter((k) => k !== key);
+    } else {
+      m.char = key;
+      if (Array.isArray(m.coChars)) m.coChars = m.coChars.filter((k) => k !== key);
+    }
+    this.setState({ dirty: true });
+  }
+  // Mirror the block into (or out of) another row on the current axis: threads
+  // in thread view, characters in character view. The home row can't be a
+  // co-star of itself, so it's rejected here.
+  toggleCoRow(id, key) {
+    const m = (this.moments || []).find((x) => x.id === id);
+    if (!m || !key) return;
+    if (this.rowKeyOf(m) === key) return;
+    const field = this.state.view === "thread" ? "coThreads" : "coChars";
+    const list = Array.isArray(m[field]) ? m[field] : (m[field] = []);
+    const i = list.indexOf(key);
+    this.pushUndo();
+    if (i > -1) list.splice(i, 1); else list.push(key);
     this.setState({ dirty: true });
   }
   togglePlanned(id) {
@@ -548,10 +570,28 @@ export default class PlotBoard extends React.Component {
     const hasBreak = up.some((u) => u.style.indexOf("178,58,46") > -1) || down.some((d) => d.style.indexOf("178,58,46") > -1);
     const written = this.isWritten(sel);
     const coRows = this.coKeys(m).map((k) => rowsList.find((x) => x.key === k)).filter(Boolean);
-    const cast = [r].concat(coRows).filter(Boolean).map((x) => ({
-      mark: x.mark,
-      style: "flex:0 0 auto;width:18px;height:18px;border-radius:50%;background:" + x.color + ";color:#f6f2e2;font-family:'IBM Plex Mono',monospace;font-size:8.5px;display:flex;align-items:center;justify-content:center;",
-    }));
+    // Editable cast: every row on this axis becomes a chip. The home row is
+    // filled and fixed; the rest toggle the block's mirror in/out of that row.
+    const homeKey = r ? this.rowKeyOf(m) : null;
+    const coSet = new Set(this.coKeys(m));
+    const chipBase = "display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 5px;border-radius:12px;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1;transition:opacity .15s;";
+    const markBase = "flex:0 0 auto;width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:8px;";
+    const castChips = rowsList.map((x) => {
+      const isHome = x.key === homeKey;
+      const filled = isHome || coSet.has(x.key);
+      let style = chipBase;
+      if (filled) style += "background:" + x.color + ";color:#f6f2e2;border:1px solid " + x.color + ";";
+      else style += "background:transparent;color:#5c6b5f;border:1px dashed " + x.color + ";";
+      style += isHome ? "cursor:default;font-weight:500;" : "cursor:pointer;";
+      const markStyle = markBase + (filled
+        ? "background:#f6f2e2;color:" + x.color + ";"
+        : "background:" + x.color + ";color:#f6f2e2;");
+      return {
+        key: x.key, mark: x.mark, label: x.label, style, markStyle,
+        title: isHome ? "Home row" : coSet.has(x.key) ? "Mirrored here — tap to remove" : "Tap to mirror this moment here",
+        onClick: isHome ? null : () => this.toggleCoRow(sel, x.key),
+      };
+    });
     return {
       chLabel: this.chInfo(m.ch),
       rowLabel: (this.state.view === "thread" ? "Thread · " : "Arc · ") + (r ? r.label : "Unassigned"),
@@ -559,9 +599,8 @@ export default class PlotBoard extends React.Component {
       noUp: up.length === 0, noDown: down.length === 0,
       hasBreak,
       breakMsg: "This lands before something it relies on — the reader won't have that yet. Move it later, or move the setup earlier.",
-      hasCast: coRows.length > 0,
-      castLabel: this.state.view === "thread" ? "THREADS" : "ON PAGE",
-      cast,
+      castChips,
+      castLabel: this.state.view === "thread" ? "Appears in threads" : "Characters on the page",
       written,
       writtenLabel: written ? "Written" : "Mark as written",
       checkMark: written ? "✓" : "",
@@ -1156,10 +1195,17 @@ export default class PlotBoard extends React.Component {
                   <button onClick={v.clearSel} style={sty("border:1px solid #b99a6b;background:transparent;color:#5c6b5f;width:24px;height:24px;border-radius:2px;cursor:pointer;font-size:13px;line-height:1;flex:0 0 auto;")}>✕</button>
                 </div>
                 <p style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:21px;line-height:1.28;margin:13px 0 13px;color:#233029;")}>{d.text}</p>
-                {d.hasCast && (
-                  <div style={sty("display:flex;align-items:center;gap:6px;margin:0 0 13px;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#5c6b5f;")}>
-                    <span>{d.castLabel}</span>
-                    {d.cast.map((cm, i) => <span key={i} style={sty(cm.style)}>{cm.mark}</span>)}
+                {d.castChips.length > 0 && (
+                  <div style={sty("margin:0 0 15px;")}>
+                    <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;margin-bottom:8px;")}>{d.castLabel}</div>
+                    <div style={sty("display:flex;flex-wrap:wrap;gap:6px;")}>
+                      {d.castChips.map((c) => (
+                        <button key={c.key} onClick={c.onClick || undefined} disabled={!c.onClick} title={c.title} style={sty(c.style)}>
+                          <span style={sty(c.markStyle)}>{c.mark}</span>
+                          <span>{c.label}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
                 <div onClick={d.onToggleWritten} style={sty(`display:flex;align-items:center;gap:9px;cursor:pointer;margin:0 0 17px;padding:9px 11px;border:1px solid #b99a6b;border-radius:2px;background:${d.writtenRowBg};user-select:none;`)}>
