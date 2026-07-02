@@ -6,7 +6,6 @@ import {
   deleteSnapshot,
   renameProject,
 } from "./storage.js";
-import { signOut } from "./authService.js";
 
 // Parse an inline CSS string ("prop:val;prop:val") into a React style object.
 // The component logic below produces CSS strings (ported verbatim from the
@@ -629,7 +628,6 @@ export default class PlotBoard extends React.Component {
       onCommitName: () => this.commitRenameProject(),
       onCancelName: () => this.cancelRenameProject(),
       onExit: () => this.exit(),
-      onSignOut: () => signOut(),
       contStyle, contLabel,
       threadBtn, charBtn, ledgerBtn, weaveBtn, addRowLabel,
       addBtn, connectBtn, connectHint, connectMode, undoBtn, canUndo, noUndo: !canUndo,
@@ -730,7 +728,6 @@ export default class PlotBoard extends React.Component {
                 </div>
               )}
             </div>
-            <button onClick={v.onSignOut} title="Sign out" style={sty("font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.03em;padding:8px 13px;cursor:pointer;border:1px solid #6e4a2e;border-radius:2px;background:#f7f2de;color:#233029;")}>Sign out</button>
           </div>
         </header>
 

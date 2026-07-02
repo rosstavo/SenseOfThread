@@ -16,10 +16,49 @@
     body { background: #d9cfb2; }
     .stub:hover { box-shadow: 0 3px 9px rgba(0, 0, 0, .20) !important; }
     .cell.drophot { background: rgba(47, 110, 98, .10) !important; box-shadow: inset 0 0 0 1.5px #2f6e62; }
+
+    /* Mobile is out of scope (see PRD). On small screens hide the whole app
+       and show a desktop-only notice instead of a broken layout. */
+    .mobile-block { display: none; }
+    @media (max-width: 768px) {
+      #root { display: none !important; }
+      .mobile-block {
+        display: flex;
+        height: 100%;
+        align-items: center;
+        justify-content: center;
+        padding: 28px;
+        text-align: center;
+      }
+      .mobile-block__inner { max-width: 340px; color: #233029; }
+      .mobile-block__title {
+        font-family: 'Cormorant Garamond', serif;
+        font-weight: 600;
+        font-size: 30px;
+        letter-spacing: .4px;
+        margin: 0 0 14px;
+      }
+      .mobile-block__body {
+        font-family: 'Source Serif 4', serif;
+        font-size: 15px;
+        line-height: 1.55;
+        color: #5c6b5f;
+        margin: 0;
+      }
+    }
   </style>
 </head>
 <body>
   <div id="root"></div>
+  <div class="mobile-block">
+    <div class="mobile-block__inner">
+      <h1 class="mobile-block__title">Sense of Thread</h1>
+      <p class="mobile-block__body">
+        This is a wide, desktop-first plotting board — it needs room to breathe.
+        Please open it on a laptop or desktop.
+      </p>
+    </div>
+  </div>
   <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>
