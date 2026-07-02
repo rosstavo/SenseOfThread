@@ -65,6 +65,7 @@ export default class PlotBoard extends React.Component {
       connectMode: false,
       connectFrom: null,
       menuOpen: false,
+      blockMenu: false,
       versions: [],
       versionsLoaded: false,
       versionsBusy: false,
@@ -142,6 +143,14 @@ export default class PlotBoard extends React.Component {
   coKeys(m) { return this.state.view === "thread" ? m.coThreads || [] : m.coChars || []; }
   isWritten(id) { return !!(this.written && this.written.has(id)); }
   toggleWritten(id) { if (!this.written) this.written = new Set(); this.pushUndo(); if (this.written.has(id)) this.written.delete(id); else this.written.add(id); this.setState((s) => ({ writeTick: s.writeTick + 1, dirty: true })); }
+  // Status is a single boolean: written, or (its default inverse) planned.
+  setWritten(id, val) {
+    if (!this.written) this.written = new Set();
+    if (this.written.has(id) === val) return;
+    this.pushUndo();
+    if (val) this.written.add(id); else this.written.delete(id);
+    this.setState((s) => ({ writeTick: s.writeTick + 1, dirty: true }));
+  }
   chShort(n) { const c = this.chapters.find((x) => x.n === n); return c ? c.label : "#" + n; }
   chInfo(n) { const c = this.chapters.find((x) => x.n === n); return c ? c.label + " · " + c.title : "Chapter " + n; }
 
@@ -155,8 +164,9 @@ export default class PlotBoard extends React.Component {
       this.setState({ connectMode: false, connectFrom: null });
       return;
     }
-    this.setState((s) => ({ selected: s.selected === id ? null : id }));
+    this.setState((s) => ({ selected: s.selected === id ? null : id, blockMenu: false }));
   }
+  toggleBlockMenu() { this.setState((s) => ({ blockMenu: !s.blockMenu })); }
   toggleConnect() { this.setState((s) => ({ connectMode: !s.connectMode, connectFrom: null })); }
   startConnect(id) { this.setState({ connectMode: true, connectFrom: id }); }
   addDependency(a, b) {
@@ -166,6 +176,16 @@ export default class PlotBoard extends React.Component {
     const dep = ma.ch <= mb.ch ? ma : mb;
     const tgt = ma.ch <= mb.ch ? mb : ma;
     if (dep.id !== tgt.id && !tgt.deps.includes(dep.id)) { this.pushUndo(); tgt.deps.push(dep.id); }
+    this.setState({ dirty: true });
+  }
+  // Sever one connection. The edge lives on the dependent block's deps array,
+  // so `target` is whichever block holds it (the later one for an upstream link,
+  // the selected block for a downstream one).
+  removeDependency(targetId, depId) {
+    const t = (this.moments || []).find((m) => m.id === targetId);
+    if (!t || !Array.isArray(t.deps) || !t.deps.includes(depId)) return;
+    this.pushUndo();
+    t.deps = t.deps.filter((d) => d !== depId);
     this.setState({ dirty: true });
   }
   addBlock() {
@@ -217,13 +237,6 @@ export default class PlotBoard extends React.Component {
     const i = list.indexOf(key);
     this.pushUndo();
     if (i > -1) list.splice(i, 1); else list.push(key);
-    this.setState({ dirty: true });
-  }
-  togglePlanned(id) {
-    const m = (this.moments || []).find((x) => x.id === id);
-    if (!m) return;
-    this.pushUndo();
-    m.planned = !m.planned;
     this.setState({ dirty: true });
   }
   // --- rows (threads / character arcs) ------------------------------------
@@ -559,13 +572,15 @@ export default class PlotBoard extends React.Component {
     const m = byId[sel]; if (!m) return null;
     const rowsList = this.state.view === "thread" ? this.threads : this.characters;
     const r = rowsList.find((x) => x.key === this.rowKeyOf(m));
+    // The edge is stored on the dependent block's deps array: for an upstream
+    // link that's the selected block; for a downstream link it's the other one.
     const up = m.deps.map((d) => byId[d]).filter(Boolean).map((dm) => {
       const broken = dm.ch > m.ch, tight = dm.ch === m.ch;
-      return { ch: this.chShort(dm.ch), text: dm.text, style: this.refItemStyle(broken), chStyle: this.chChip(broken, tight), onClick: () => this.select(dm.id) };
+      return { ch: this.chShort(dm.ch), text: dm.text, style: this.refItemStyle(broken), chStyle: this.chChip(broken, tight), onClick: () => this.select(dm.id), onRemove: () => this.removeDependency(sel, dm.id), removeTitle: "Remove this connection" };
     });
     const down = moments.filter((x) => x.deps.includes(sel)).map((x) => {
       const broken = m.ch > x.ch, tight = m.ch === x.ch;
-      return { ch: this.chShort(x.ch), text: x.text, style: this.refItemStyle(broken), chStyle: this.chChip(broken, tight), onClick: () => this.select(x.id) };
+      return { ch: this.chShort(x.ch), text: x.text, style: this.refItemStyle(broken), chStyle: this.chChip(broken, tight), onClick: () => this.select(x.id), onRemove: () => this.removeDependency(x.id, sel), removeTitle: "Remove this connection" };
     });
     const hasBreak = up.some((u) => u.style.indexOf("178,58,46") > -1) || down.some((d) => d.style.indexOf("178,58,46") > -1);
     const written = this.isWritten(sel);
@@ -587,11 +602,12 @@ export default class PlotBoard extends React.Component {
         ? "background:#f6f2e2;color:" + x.color + ";"
         : "background:" + x.color + ";color:#f6f2e2;");
       return {
-        key: x.key, mark: x.mark, label: x.label, style, markStyle,
+        key: x.key, mark: x.mark, label: x.label, style, markStyle, isHome,
         title: isHome ? "Home row" : coSet.has(x.key) ? "Mirrored here — tap to remove" : "Tap to mirror this moment here",
         onClick: isHome ? null : () => this.toggleCoRow(sel, x.key),
       };
     });
+    const homeRowMark = r ? { mark: r.mark, color: r.color } : null;
     return {
       chLabel: this.chInfo(m.ch),
       rowLabel: (this.state.view === "thread" ? "Thread · " : "Arc · ") + (r ? r.label : "Unassigned"),
@@ -599,32 +615,38 @@ export default class PlotBoard extends React.Component {
       noUp: up.length === 0, noDown: down.length === 0,
       hasBreak,
       breakMsg: "This lands before something it relies on — the reader won't have that yet. Move it later, or move the setup earlier.",
-      castChips,
-      castLabel: this.state.view === "thread" ? "Appears in threads" : "Characters on the page",
-      written,
-      writtenLabel: written ? "Written" : "Mark as written",
-      checkMark: written ? "✓" : "",
-      writtenRowBg: written ? "#dfeae2" : "transparent",
-      checkStyle: "flex:0 0 auto;width:18px;height:18px;border-radius:3px;border:1.5px solid " + (written ? "#2f6e62" : "#6e4a2e") + ";display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1;color:#2f6e62;background:" + (written ? "#c9ded4" : "transparent") + ";",
-      onToggleWritten: () => this.toggleWritten(sel),
-      // --- block controls ---
+      // --- status: one boolean, shown as a Planned | Written segment ---------
+      statusSegWrap: "display:flex;border:1px solid #b99a6b;border-radius:3px;overflow:hidden;margin:0 0 4px;",
+      statusSegs: [
+        {
+          key: "planned", label: "◇ Planned",
+          style: "flex:1 1 0;text-align:center;padding:8px 6px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.02em;cursor:pointer;border:none;" + (!written ? "background:#eadfbe;color:#6f5a1e;font-weight:500;" : "background:transparent;color:#5c6b5f;"),
+          onClick: () => this.setWritten(sel, false),
+        },
+        {
+          key: "written", label: "✓ Written",
+          style: "flex:1 1 0;text-align:center;padding:8px 6px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.02em;cursor:pointer;border:none;border-left:1px solid #b99a6b;" + (written ? "background:#c9ded4;color:#1f4a41;font-weight:500;" : "background:transparent;color:#5c6b5f;"),
+          onClick: () => this.setWritten(sel, true),
+        },
+      ],
+      // --- placement: home line (reassignable) + mirror chips ----------------
       rowKey: r ? this.rowKeyOf(m) : "",
       homeUnassigned: !r,
-      assignLabel: this.state.view === "thread" ? "Assign thread" : "Assign character arc",
+      homeMark: homeRowMark,
+      homeDotStyle: homeRowMark ? "flex:0 0 auto;width:11px;height:11px;border-radius:50%;background:" + homeRowMark.color + ";" : "",
+      homeSelectStyle: "flex:1 1 auto;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#233029;background:transparent;border:none;cursor:pointer;padding:0;",
+      homeLineStyle: "display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid #b99a6b;border-radius:2px;background:#fbf7e6;margin:0 0 11px;",
       rowOptions: rowsList.map((x) => ({ key: x.key, label: x.label })),
-      selectStyle: "width:100%;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#233029;background:#fbf7e6;border:1px solid #b99a6b;border-radius:2px;padding:7px 9px;cursor:pointer;",
       onAssign: (e) => this.assignRow(sel, e.target.value),
-      planned: !!m.planned,
-      plannedLabel: m.planned ? "Planned" : "Mark planned",
-      plannedMark: m.planned ? "✓" : "",
-      plannedRowBg: m.planned ? "#f1e7c9" : "transparent",
-      plannedCheckStyle: "flex:0 0 auto;width:18px;height:18px;border-radius:3px;border:1.5px dashed " + (m.planned ? "#a1863c" : "#6e4a2e") + ";display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1;color:#a1863c;background:" + (m.planned ? "#e9dcb0" : "transparent") + ";",
-      onTogglePlanned: () => this.togglePlanned(sel),
+      mirrorChips: castChips.filter((c) => !c.isHome),
+      mirrorLabel: this.state.view === "thread" ? "Also mirrored in" : "Also on the page",
+      // --- overflow (⋯) menu: connect + delete -------------------------------
+      blockMenuOpen: !!this.state.blockMenu,
+      onToggleBlockMenu: () => this.toggleBlockMenu(),
+      connectActive: this.state.connectMode && this.state.connectFrom === sel,
       connectLabel: this.state.connectMode && this.state.connectFrom === sel ? "Now click the block that depends on this…" : "⤳ Connect from this block",
-      connectBtnStyle: "width:100%;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.02em;padding:9px 11px;border-radius:2px;cursor:pointer;text-align:left;border:1px solid " + (this.state.connectMode && this.state.connectFrom === sel ? "#b58a2e;color:#8a6a1e;background:#f1e7c9;" : "#6e4a2e;color:#233029;background:#fbf7e6;"),
-      onConnectFrom: () => this.startConnect(sel),
-      deleteBtnStyle: "width:100%;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.02em;padding:9px 11px;border-radius:2px;cursor:pointer;text-align:left;border:1px solid #b23a2e;color:#b23a2e;background:transparent;",
-      onDelete: () => this.deleteBlock(sel),
+      onConnectFrom: () => { this.setState({ blockMenu: false }); this.startConnect(sel); },
+      onDelete: () => { this.setState({ blockMenu: false }); this.deleteBlock(sel); },
     };
   }
 
@@ -1192,49 +1214,64 @@ export default class PlotBoard extends React.Component {
                     <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;color:#233029;font-weight:500;")}>{d.chLabel}</div>
                     <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;color:#2f6e62;margin-top:3px;")}>{d.rowLabel}</div>
                   </div>
-                  <button onClick={v.clearSel} style={sty("border:1px solid #b99a6b;background:transparent;color:#5c6b5f;width:24px;height:24px;border-radius:2px;cursor:pointer;font-size:13px;line-height:1;flex:0 0 auto;")}>✕</button>
-                </div>
-                <p style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:21px;line-height:1.28;margin:13px 0 13px;color:#233029;")}>{d.text}</p>
-                {d.castChips.length > 0 && (
-                  <div style={sty("margin:0 0 15px;")}>
-                    <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;margin-bottom:8px;")}>{d.castLabel}</div>
-                    <div style={sty("display:flex;flex-wrap:wrap;gap:6px;")}>
-                      {d.castChips.map((c) => (
-                        <button key={c.key} onClick={c.onClick || undefined} disabled={!c.onClick} title={c.title} style={sty(c.style)}>
-                          <span style={sty(c.markStyle)}>{c.mark}</span>
-                          <span>{c.label}</span>
-                        </button>
-                      ))}
-                    </div>
+                  <div style={sty("display:flex;gap:6px;flex:0 0 auto;")}>
+                    <button onClick={d.onToggleBlockMenu} title="Block actions" style={sty("border:1px solid #b99a6b;width:24px;height:24px;border-radius:2px;cursor:pointer;font-size:14px;line-height:1;font-family:'IBM Plex Mono',monospace;" + (d.blockMenuOpen ? "background:#233029;color:#f6f2e2;" : "background:transparent;color:#5c6b5f;"))}>⋯</button>
+                    <button onClick={v.clearSel} style={sty("border:1px solid #b99a6b;background:transparent;color:#5c6b5f;width:24px;height:24px;border-radius:2px;cursor:pointer;font-size:13px;line-height:1;")}>✕</button>
                   </div>
-                )}
-                <div onClick={d.onToggleWritten} style={sty(`display:flex;align-items:center;gap:9px;cursor:pointer;margin:0 0 17px;padding:9px 11px;border:1px solid #b99a6b;border-radius:2px;background:${d.writtenRowBg};user-select:none;`)}>
-                  <span style={sty(d.checkStyle)}>{d.checkMark}</span>
-                  <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.02em;color:#233029;")}>{d.writtenLabel}</span>
                 </div>
 
-                <div style={sty("display:flex;flex-direction:column;gap:10px;margin:0 0 17px;padding:13px 12px;border:1px solid #b99a6b;border-radius:2px;background:rgba(110,74,46,.045);")}>
-                  <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;")}>{d.assignLabel}</div>
-                  <select value={d.rowKey} onChange={d.onAssign} style={sty(d.selectStyle)}>
-                    {d.homeUnassigned && <option value="" disabled>— Unassigned —</option>}
-                    {d.rowOptions.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
-                  </select>
-                  <button onClick={d.onConnectFrom} style={sty(d.connectBtnStyle)}>{d.connectLabel}</button>
-                  <button onClick={d.onDelete} style={sty(d.deleteBtnStyle)}>✕ Delete block</button>
+                {d.blockMenuOpen && (
+                  <div style={sty("margin:11px 0 0;border:1px solid #b99a6b;border-radius:3px;background:#fbf7e6;overflow:hidden;box-shadow:0 8px 20px -10px rgba(0,0,0,.35);")}>
+                    <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#a08a5e;padding:8px 12px 4px;")}>Block actions</div>
+                    <button onClick={d.onConnectFrom} style={sty("display:block;width:100%;text-align:left;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.02em;padding:10px 12px;cursor:pointer;border:none;border-top:1px solid rgba(110,74,46,.14);" + (d.connectActive ? "background:#f1e7c9;color:#8a6a1e;" : "background:transparent;color:#233029;"))}>{d.connectLabel}</button>
+                    <button onClick={d.onDelete} style={sty("display:block;width:100%;text-align:left;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.02em;padding:10px 12px;cursor:pointer;border:none;border-top:1px solid rgba(110,74,46,.14);background:transparent;color:#b23a2e;")}>✕ Delete block…</button>
+                  </div>
+                )}
+
+                <p style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:21px;line-height:1.28;margin:13px 0 15px;color:#233029;")}>{d.text}</p>
+
+                <div style={sty(d.statusSegWrap)}>
+                  {d.statusSegs.map((s) => (
+                    <button key={s.key} onClick={s.onClick} style={sty(s.style)}>{s.label}</button>
+                  ))}
+                </div>
+
+                <div style={sty("margin:17px 0 0;")}>
+                  <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;margin-bottom:8px;")}>Placement</div>
+                  <div style={sty(d.homeLineStyle)}>
+                    {d.homeMark && <span style={sty(d.homeDotStyle)}></span>}
+                    <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5c6b5f;")}>Home</span>
+                    <select value={d.rowKey} onChange={d.onAssign} style={sty(d.homeSelectStyle + "margin-left:auto;text-align:right;")}>
+                      {d.homeUnassigned && <option value="" disabled>— Unassigned —</option>}
+                      {d.rowOptions.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                    </select>
+                  </div>
+                  {d.mirrorChips.length > 0 && (
+                    <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.05em;text-transform:uppercase;color:#7a8a7d;margin:0 0 7px;")}>{d.mirrorLabel}</div>
+                  )}
+                  <div style={sty("display:flex;flex-wrap:wrap;gap:6px;")}>
+                    {d.mirrorChips.map((c) => (
+                      <button key={c.key} onClick={c.onClick} title={c.title} style={sty(c.style)}>
+                        <span style={sty(c.markStyle)}>{c.mark}</span>
+                        <span>{c.label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {d.hasBreak && (
-                  <div style={sty("background:#f6e2dd;border:1px solid #b23a2e;border-radius:2px;padding:10px 11px;margin:0 0 16px;")}>
+                  <div style={sty("background:#f6e2dd;border:1px solid #b23a2e;border-radius:2px;padding:10px 11px;margin:16px 0 0;")}>
                     <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#b23a2e;font-weight:500;margin-bottom:4px;")}>Continuity break</div>
                     <div style={sty("font-size:12.5px;line-height:1.42;color:#7a2a20;")}>{d.breakMsg}</div>
                   </div>
                 )}
-                <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;border-bottom:1px solid #b99a6b;padding-bottom:5px;margin-bottom:2px;")}>Must be established first</div>
+                <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;border-bottom:1px solid #b99a6b;padding-bottom:5px;margin:20px 0 2px;")}>Must be established first</div>
                 {d.noUp && <div style={sty("font-size:12.5px;color:#5c6b5f;font-style:italic;padding:9px 0;")}>— nothing; this moment opens its own line.</div>}
                 {(d.upstream || []).map((u, i) => (
                   <div key={i} onClick={u.onClick} style={sty(u.style)}>
                     <span style={sty(u.chStyle)}>{u.ch}</span>
-                    <span style={sty("font-size:12.5px;line-height:1.34;")}>{u.text}</span>
+                    <span style={sty("font-size:12.5px;line-height:1.34;flex:1 1 auto;")}>{u.text}</span>
+                    <button onClick={(e) => { e.stopPropagation(); u.onRemove(); }} title={u.removeTitle} style={sty("flex:0 0 auto;border:none;background:transparent;color:#a08a5e;cursor:pointer;font-size:12px;line-height:1;padding:1px 2px;margin-top:1px;")}>✕</button>
                   </div>
                 ))}
                 <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;border-bottom:1px solid #b99a6b;padding-bottom:5px;margin:18px 0 2px;")}>This sets up later</div>
@@ -1242,7 +1279,8 @@ export default class PlotBoard extends React.Component {
                 {(d.downstream || []).map((dn, i) => (
                   <div key={i} onClick={dn.onClick} style={sty(dn.style)}>
                     <span style={sty(dn.chStyle)}>{dn.ch}</span>
-                    <span style={sty("font-size:12.5px;line-height:1.34;")}>{dn.text}</span>
+                    <span style={sty("font-size:12.5px;line-height:1.34;flex:1 1 auto;")}>{dn.text}</span>
+                    <button onClick={(e) => { e.stopPropagation(); dn.onRemove(); }} title={dn.removeTitle} style={sty("flex:0 0 auto;border:none;background:transparent;color:#a08a5e;cursor:pointer;font-size:12px;line-height:1;padding:1px 2px;margin-top:1px;")}>✕</button>
                   </div>
                 ))}
               </div>
