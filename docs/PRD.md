@@ -1,12 +1,12 @@
-# PlotBoard — Product Requirements Document
+# Sense of Thread — Product Requirements Document
 
 ## Overview
 
-PlotBoard is a web-based fiction plotting and continuity tool for novelists. It helps writers organize their plot across chapters, track character arcs and story threads, and detect continuity breaks before they reach readers.
+Sense of Thread is a web-based fiction plotting and continuity tool for novelists. It helps writers organize their plot across chapters, track character arcs and story threads, and detect continuity breaks before they reach readers.
 
 ## Vision
 
-A writer should be able to map their entire novel on one screen — seeing at a glance how each moment connects to what comes before and after, and whether every payoff has its setup. PlotBoard makes continuity problems visible before the manuscript is finished.
+A writer should be able to map their entire novel on one screen — seeing at a glance how each moment connects to what comes before and after, and whether every payoff has its setup. Sense of Thread makes continuity problems visible before the manuscript is finished.
 
 ## User Persona
 

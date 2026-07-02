@@ -1,6 +1,6 @@
-# Deploying PlotBoard to Cloudflare Pages
+# Deploying Sense of Thread to Cloudflare Pages
 
-PlotBoard is a static Vite SPA that talks to Firebase (Auth + Firestore) entirely
+Sense of Thread is a static Vite SPA that talks to Firebase (Auth + Firestore) entirely
 from the browser. Cloudflare Pages only needs to serve the built static files —
 the backend lives in Firebase and is unaffected by where the frontend is hosted.
 

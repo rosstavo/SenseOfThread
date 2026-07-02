@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-PlotBoard needs cloud persistence so Users can access their Projects from any device and never lose work. The initial cookie-based approach failed because a full Document with Snapshots serialises to ~15 KB — well beyond the browser's per-cookie limit. A backend store is required.
+Sense of Thread needs cloud persistence so Users can access their Projects from any device and never lose work. The initial cookie-based approach failed because a full Document with Snapshots serialises to ~15 KB — well beyond the browser's per-cookie limit. A backend store is required.
 
 ## Decision
 

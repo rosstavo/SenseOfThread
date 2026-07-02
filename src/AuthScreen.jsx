@@ -138,7 +138,7 @@ export default function AuthScreen() {
               lineHeight: 1.05,
             }}
           >
-            PlotBoard
+            Sense of Thread
           </div>
           <div style={{ fontFamily: mono, fontSize: 10, color: "#5c6b5f", marginTop: 5 }}>
             fiction plotting · continuity board

@@ -2,7 +2,7 @@
   "name": "sense-of-thread",
   "version": "0.1.0",
   "type": "module",
-  "description": "PlotBoard — a fiction plotting / continuity board",
+  "description": "Sense of Thread — a fiction plotting / continuity board",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
