@@ -1,0 +1,32 @@
+rules_version = '2';
+
+// PlotBoard security rules (ADR 0001). A signed-in User may only read and write
+// their own profile, their own Projects, and the Snapshots under those
+// Projects. Ownership is enforced by request.auth.uid == ownerId.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // A User's profile document. Only the owner may read/write it.
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Projects: readable/writable only by their owner.
+    match /projects/{projectId} {
+      // Reading, updating, deleting require you to already own the doc.
+      allow read, update, delete: if request.auth != null
+        && resource.data.ownerId == request.auth.uid;
+
+      // Creating requires that the new doc's ownerId is your own uid.
+      allow create: if request.auth != null
+        && request.resource.data.ownerId == request.auth.uid;
+
+      // Snapshots inherit ownership from the parent project document.
+      match /snapshots/{snapId} {
+        allow read, write: if request.auth != null
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+      }
+    }
+  }
+}

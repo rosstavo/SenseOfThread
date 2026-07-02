@@ -1,0 +1,7 @@
+# Cloudflare Pages SPA fallback. Existing static files (the JS bundle, assets)
+# are served directly; any other path falls through to index.html with a 200 so
+# client-side navigation / deep links resolve instead of 404ing.
+#
+# Vite copies everything in public/ to the root of dist/ at build time, so this
+# lands at dist/_redirects where Cloudflare Pages expects it.
+/*    /index.html    200
