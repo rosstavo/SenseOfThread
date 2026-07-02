@@ -18,7 +18,7 @@ const border = "#b99a6b";
 
 const mono = "'IBM Plex Mono',monospace";
 const serif = "'Source Serif 4',serif";
-const display = "'Cormorant Garamond',serif";
+const display = "'Sorts Mill Goudy',serif";
 
 const label = {
     fontFamily: mono,
@@ -153,7 +153,7 @@ export default function AuthScreen() {
                         <div
                             style={{
                                 fontFamily: display,
-                                fontWeight: 600,
+                                fontWeight: 400,
                                 fontSize: 30,
                                 letterSpacing: ".4px",
                                 lineHeight: 1.05,
@@ -176,7 +176,7 @@ export default function AuthScreen() {
                     <h2
                         style={{
                             fontFamily: display,
-                            fontWeight: 600,
+                            fontWeight: 400,
                             fontSize: 20,
                             margin: "0 0 16px",
                             borderBottom: "1px solid " + border,

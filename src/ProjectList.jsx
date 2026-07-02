@@ -18,7 +18,7 @@ const green = "#2f6e62";
 const border = "#b99a6b";
 const mono = "'IBM Plex Mono',monospace";
 const serif = "'Source Serif 4',serif";
-const display = "'Cormorant Garamond',serif";
+const display = "'Sorts Mill Goudy',serif";
 
 function fmtDate(ms) {
   if (!ms) return "just now";
@@ -121,7 +121,7 @@ export default function ProjectList({ user, onOpen }) {
         }}
       >
         <div>
-          <h1 style={{ fontFamily: display, fontWeight: 600, fontSize: 26, margin: 0, letterSpacing: ".3px" }}>
+          <h1 style={{ fontFamily: display, fontWeight: 400, fontSize: 26, margin: 0, letterSpacing: ".3px" }}>
             Your projects
           </h1>
           <p style={{ margin: "3px 0 0", fontFamily: mono, fontSize: 10.5, color: "#5c6b5f" }}>
@@ -242,7 +242,7 @@ export default function ProjectList({ user, onOpen }) {
                           flex: 1,
                           fontFamily: display,
                           fontSize: 19,
-                          fontWeight: 600,
+                          fontWeight: 400,
                           color: ink,
                           background: "#fffdf3",
                           border: "1px solid " + green,
@@ -256,7 +256,7 @@ export default function ProjectList({ user, onOpen }) {
                         style={{
                           fontFamily: display,
                           fontSize: 20,
-                          fontWeight: 600,
+                          fontWeight: 400,
                           lineHeight: 1.1,
                           color: ink,
                           overflow: "hidden",

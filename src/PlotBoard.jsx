@@ -27,6 +27,22 @@ function sty(css) {
   return o;
 }
 
+// Colour palette new thread/character rows cycle through (reused from the seed
+// docs' tones so added rows sit visually alongside the starter ones).
+const ROW_PALETTE = [
+  "#7c3b2c", "#2f6e62", "#a1863c", "#8a4a3a", "#5b6b63",
+  "#a5645a", "#6b6558", "#8a4a3a", "#3a6b5b", "#9a6a2c",
+];
+
+// A one-or-two-character badge from a label, e.g. "The Feud" -> "TF",
+// "Romeo" -> "Ro". Used as the default `mark` for a newly added row.
+function markFromLabel(label) {
+  const words = String(label || "").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "?";
+  if (words.length === 1) return words[0].slice(0, 2);
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
 export default class PlotBoard extends React.Component {
   static NS = "http://www.w3.org/2000/svg";
 
@@ -57,6 +73,10 @@ export default class PlotBoard extends React.Component {
       lastVerName: p.lastVerName || "",
       editingName: false,
       nameDraft: "",
+      editingRow: null,   // key of the thread/character row being edited inline
+      rowDraft: {},        // { label, note, color, mark } while editing a row
+      editingChapter: null, // n of the chapter whose editor popover is open
+      chapterDraft: {},     // { label, title } while editing a chapter
     };
   }
 
@@ -168,6 +188,7 @@ export default class PlotBoard extends React.Component {
     this.setState({ selected: nextId, dirty: true });
   }
   assignRow(id, key) {
+    if (!key) return; // "— Unassigned —" placeholder
     const m = (this.moments || []).find((x) => x.id === id);
     if (!m) return;
     const cur = this.state.view === "thread" ? m.thread : m.char;
@@ -183,6 +204,164 @@ export default class PlotBoard extends React.Component {
     m.planned = !m.planned;
     this.setState({ dirty: true });
   }
+  // --- rows (threads / character arcs) ------------------------------------
+  // The row axis is view-dependent: threads in thread view, characters in
+  // character view. curRows() is the live array for the current axis.
+  curRows() { return this.state.view === "thread" ? this.threads : this.characters; }
+  addRow() {
+    const isThread = this.state.view === "thread";
+    const rows = isThread ? this.threads : (this.characters || (this.characters = []));
+    const key = (isThread ? "t" : "c") + Date.now().toString(36);
+    const label = isThread ? "New thread" : "New character";
+    const color = ROW_PALETTE[rows.length % ROW_PALETTE.length];
+    const row = { key, label, note: "", color, mark: markFromLabel(label) };
+    this.pushUndo();
+    rows.push(row);
+    // Open straight into inline edit so the user can name it immediately.
+    this.setState({ editingRow: key, rowDraft: { ...row }, selected: null });
+  }
+  startEditRow(key) {
+    const row = (this.curRows() || []).find((r) => r.key === key);
+    if (!row) return;
+    this.setState({ editingRow: key, rowDraft: { label: row.label, note: row.note || "", color: row.color, mark: row.mark } });
+  }
+  onRowDraft(field, value) { this.setState((s) => ({ rowDraft: { ...s.rowDraft, [field]: value } })); }
+  commitEditRow() {
+    const key = this.state.editingRow;
+    const draft = this.state.rowDraft || {};
+    const row = (this.curRows() || []).find((r) => r.key === key);
+    this.setState({ editingRow: null, rowDraft: {} });
+    if (!row) return;
+    const label = (draft.label || "").trim() || row.label;
+    const mark = (draft.mark || "").trim() || markFromLabel(label);
+    this.pushUndo();
+    row.label = label;
+    row.note = (draft.note || "").trim();
+    row.color = draft.color || row.color;
+    row.mark = mark;
+    this.setState({ dirty: true });
+  }
+  cancelEditRow() { this.setState({ editingRow: null, rowDraft: {} }); }
+  deleteRow(key) {
+    const isThread = this.state.view === "thread";
+    const rows = isThread ? this.threads : this.characters;
+    const row = (rows || []).find((r) => r.key === key);
+    if (!row) return;
+    if (!window.confirm(`Delete "${row.label}"? Any moments on this ${isThread ? "thread" : "arc"} are kept but moved to an Unassigned row until you re-home them.`))
+      return;
+    this.pushUndo();
+    const idx = rows.findIndex((r) => r.key === key);
+    if (idx > -1) rows.splice(idx, 1);
+    // Orphan the moments homed here (they keep their other axis) and strip the
+    // key from every co-appearance list.
+    (this.moments || []).forEach((m) => {
+      if (isThread) {
+        if (m.thread === key) m.thread = null;
+        if (Array.isArray(m.coThreads)) m.coThreads = m.coThreads.filter((k) => k !== key);
+      } else {
+        if (m.char === key) m.char = null;
+        if (Array.isArray(m.coChars)) m.coChars = m.coChars.filter((k) => k !== key);
+      }
+    });
+    this.setState({ editingRow: null, rowDraft: {}, selected: null, dirty: true });
+  }
+
+  // --- chapters (columns) --------------------------------------------------
+  // `n` is both identity (moment.ch) and sort order, so it stays canonical
+  // 1..N in array order; every structural change reorders the array then calls
+  // renumberChapters(), which reassigns n and remaps every moment.ch.
+  renumberChapters() {
+    const map = {};
+    this.chapters.forEach((c, i) => { map[c.n] = i + 1; });
+    this.chapters.forEach((c, i) => { c.n = i + 1; });
+    (this.moments || []).forEach((m) => { if (map[m.ch] != null) m.ch = map[m.ch]; });
+    this.recomputeAutoLabels();
+  }
+  // Regenerate labels for auto-labelled chapters only. Prologue chapters read
+  // "Prologue" and are skipped by the running counter, so numbered chapters
+  // count from 1 after a prologue. Manual labels are never touched.
+  recomputeAutoLabels() {
+    let k = 0;
+    this.chapters.forEach((c) => {
+      if (!c.labelAuto) return;
+      if (c.prologue) { c.label = "Prologue"; return; }
+      k += 1;
+      c.label = "Ch " + k;
+    });
+  }
+  addChapter() { this.insertChapter(this.chapters.length); }
+  insertChapter(atIndex) {
+    this.pushUndo();
+    const at = Math.max(0, Math.min(atIndex, this.chapters.length));
+    this.chapters.splice(at, 0, { n: 0, label: "", title: "", labelAuto: true });
+    this.renumberChapters();
+    const c = this.chapters[at];
+    this.setState({ editingChapter: c.n, chapterDraft: { label: c.label, title: c.title }, dirty: true });
+  }
+  deleteChapter(n) {
+    if (this.chapters.length <= 1) { window.alert("A board needs at least one chapter."); return; }
+    const idx = this.chapters.findIndex((c) => c.n === n);
+    if (idx === -1) return;
+    const inCh = (this.moments || []).filter((m) => m.ch === n).length;
+    if (inCh > 0 && !window.confirm(`Delete this chapter? Its ${inCh} moment${inCh === 1 ? "" : "s"} will move to the ${idx === 0 ? "next" : "previous"} chapter.`))
+      return;
+    this.pushUndo();
+    // Re-home this chapter's moments onto a neighbour before removing it.
+    const neighbourN = idx === 0 ? this.chapters[1].n : this.chapters[idx - 1].n;
+    (this.moments || []).forEach((m) => { if (m.ch === n) m.ch = neighbourN; });
+    this.chapters.splice(idx, 1);
+    this.renumberChapters();
+    this.setState({ editingChapter: null, chapterDraft: {}, dirty: true });
+  }
+  moveChapter(n, dir) {
+    const idx = this.chapters.findIndex((c) => c.n === n);
+    const j = idx + dir;
+    if (idx === -1 || j < 0 || j >= this.chapters.length) return;
+    this.pushUndo();
+    const [c] = this.chapters.splice(idx, 1);
+    this.chapters.splice(j, 0, c);
+    this.renumberChapters();
+    this.setState({ editingChapter: c.n, dirty: true }); // n changed; keep editor on it
+  }
+  startEditChapter(n) {
+    const c = this.chapters.find((x) => x.n === n);
+    if (!c) return;
+    this.setState({ editingChapter: n, chapterDraft: { label: c.label, title: c.title || "" } });
+  }
+  onChapterDraft(field, value) { this.setState((s) => ({ chapterDraft: { ...s.chapterDraft, [field]: value } })); }
+  commitEditChapter() {
+    const n = this.state.editingChapter;
+    const draft = this.state.chapterDraft || {};
+    const c = this.chapters.find((x) => x.n === n);
+    this.setState({ editingChapter: null, chapterDraft: {} });
+    if (!c) return;
+    this.pushUndo();
+    const label = (draft.label || "").trim();
+    // A hand-typed label takes the chapter off auto-numbering; a blank label
+    // leaves the current one untouched.
+    if (label && label !== c.label) { c.label = label; c.labelAuto = false; }
+    c.title = (draft.title || "").trim();
+    this.setState({ dirty: true });
+  }
+  cancelEditChapter() { this.setState({ editingChapter: null, chapterDraft: {} }); }
+  toggleChapterPrologue(n) {
+    const c = this.chapters.find((x) => x.n === n);
+    if (!c) return;
+    this.pushUndo();
+    c.prologue = !c.prologue;
+    if (c.prologue) c.labelAuto = true; // "Prologue" is an auto label
+    this.recomputeAutoLabels();
+    this.setState((s) => ({ dirty: true, chapterDraft: { ...s.chapterDraft, label: c.label } }));
+  }
+  resetChapterAuto(n) {
+    const c = this.chapters.find((x) => x.n === n);
+    if (!c) return;
+    this.pushUndo();
+    c.labelAuto = true;
+    this.recomputeAutoLabels();
+    this.setState((s) => ({ dirty: true, chapterDraft: { ...s.chapterDraft, label: c.label } }));
+  }
+
   nowLabel() { const d = new Date(); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
   pushUndo() {
     this.markSave();
@@ -375,7 +554,7 @@ export default class PlotBoard extends React.Component {
     }));
     return {
       chLabel: this.chInfo(m.ch),
-      rowLabel: (this.state.view === "thread" ? "Thread · " : "Arc · ") + (r ? r.label : ""),
+      rowLabel: (this.state.view === "thread" ? "Thread · " : "Arc · ") + (r ? r.label : "Unassigned"),
       text: m.text, upstream: up, downstream: down,
       noUp: up.length === 0, noDown: down.length === 0,
       hasBreak,
@@ -390,7 +569,8 @@ export default class PlotBoard extends React.Component {
       checkStyle: "flex:0 0 auto;width:18px;height:18px;border-radius:3px;border:1.5px solid " + (written ? "#2f6e62" : "#6e4a2e") + ";display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1;color:#2f6e62;background:" + (written ? "#c9ded4" : "transparent") + ";",
       onToggleWritten: () => this.toggleWritten(sel),
       // --- block controls ---
-      rowKey: this.rowKeyOf(m),
+      rowKey: r ? this.rowKeyOf(m) : "",
+      homeUnassigned: !r,
       assignLabel: this.state.view === "thread" ? "Assign thread" : "Assign character arc",
       rowOptions: rowsList.map((x) => ({ key: x.key, label: x.label })),
       selectStyle: "width:100%;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#233029;background:#fbf7e6;border:1px solid #b99a6b;border-radius:2px;padding:7px 9px;cursor:pointer;",
@@ -488,6 +668,16 @@ export default class PlotBoard extends React.Component {
     const view = this.state.view;
     const moments = this.curMoments();
     const rows = view === "thread" ? this.threads : this.characters;
+    // Moments whose home row was deleted keep their block but land in a
+    // synthetic "Unassigned" row, shown only when at least one exists.
+    const validKeys = new Set(rows.map((r) => r.key));
+    const hasOrphans = moments.some((m) => !validKeys.has(this.rowKeyOf(m)));
+    const unassignedRow = {
+      key: "__unassigned", label: "Unassigned",
+      note: view === "thread" ? "no thread — reassign these" : "no arc — reassign these",
+      color: "#8a7a5a", mark: "?", unassigned: true,
+    };
+    const renderRows = hasOrphans ? rows.concat([unassignedRow]) : rows;
     const byId = {}; moments.forEach((m) => (byId[m.id] = m));
 
     // continuity
@@ -503,12 +693,13 @@ export default class PlotBoard extends React.Component {
 
     const outCount = {}; moments.forEach((m) => m.deps.forEach((d) => { outCount[d] = (outCount[d] || 0) + 1; }));
 
-    const rowVals = rows.map((r, idx) => {
-      const bg = idx % 2 ? "rgba(110,74,46,.05)" : "transparent";
-      const labelBg = idx % 2 ? "#e6ddc2" : "#eae3cc";
+    const rowVals = renderRows.map((r, idx) => {
+      const inThisRow = (m) => r.unassigned ? !validKeys.has(this.rowKeyOf(m)) : this.rowKeyOf(m) === r.key;
+      const bg = r.unassigned ? "rgba(178,58,46,.05)" : idx % 2 ? "rgba(110,74,46,.05)" : "transparent";
+      const labelBg = r.unassigned ? "#e7d9c2" : idx % 2 ? "#e6ddc2" : "#eae3cc";
       const pipStyle = (color, dimmed) => "flex:0 0 auto;width:15px;height:15px;border-radius:50%;background:" + color + ";color:#f6f2e2;font-family:'IBM Plex Mono',monospace;font-size:8px;display:flex;align-items:center;justify-content:center;" + (dimmed ? "opacity:.85;" : "");
       const cells = this.chapters.map((c) => {
-        const list = moments.filter((m) => this.rowKeyOf(m) === r.key && m.ch === c.n).map((m) => {
+        const list = moments.filter((m) => inThisRow(m) && m.ch === c.n).map((m) => {
           const broken = brokenStubs.has(m.id) && m.deps.some((d) => byId[d] && byId[d].ch > m.ch);
           const anyBroken = m.deps.some((d) => byId[d] && byId[d].ch > m.ch) || moments.some((x) => x.deps.includes(m.id) && x.ch < m.ch);
           const coRows = this.coKeys(m).map((k) => rows.find((x) => x.key === k)).filter(Boolean);
@@ -559,9 +750,11 @@ export default class PlotBoard extends React.Component {
           onDragLeave: this.onDragLeave(),
         };
       });
-      const count = moments.filter((m) => this.rowKeyOf(m) === r.key).length;
+      const count = moments.filter((m) => inThisRow(m)).length;
       return {
         key: r.key, label: r.label, note: r.note, hasNote: !!r.note,
+        unassigned: !!r.unassigned, color: r.color, mark: r.mark,
+        editing: this.state.editingRow === r.key,
         tally: count + (count === 1 ? " entry" : " entries"),
         showThread: isWeave,
         labelStyle: "width:190px;flex:0 0 190px;padding:12px 14px 12px 12px;display:flex;flex-direction:column;justify-content:center;border-right:2px solid #6e4a2e;position:sticky;left:0;z-index:4;background:" + labelBg + ";",
@@ -646,7 +839,34 @@ export default class PlotBoard extends React.Component {
       onThread: () => this.setView("thread"),
       onChar: () => this.setView("character"),
       clearSel: () => this.setState({ selected: null }),
-      chapters: this.chapters.map((c) => ({ label: c.label, title: c.title })),
+      // row (thread / character) editing
+      onAddRow: () => this.addRow(),
+      rowDraft: this.state.rowDraft || {},
+      rowPalette: ROW_PALETTE,
+      onStartEditRow: (key) => this.startEditRow(key),
+      onRowDraft: (field, value) => this.onRowDraft(field, value),
+      onCommitRow: () => this.commitEditRow(),
+      onCancelRow: () => this.cancelEditRow(),
+      onDeleteRow: (key) => this.deleteRow(key),
+      // chapter (column) editing
+      chapters: this.chapters.map((c, i) => ({
+        n: c.n, label: c.label, title: c.title || "",
+        prologue: !!c.prologue, labelAuto: !!c.labelAuto,
+        index: i, editing: this.state.editingChapter === c.n,
+      })),
+      chapterDraft: this.state.chapterDraft || {},
+      canDeleteChapter: this.chapters.length > 1,
+      chapterCount: this.chapters.length,
+      onAddChapter: () => this.addChapter(),
+      onInsertChapter: (i) => this.insertChapter(i),
+      onStartEditChapter: (n) => this.startEditChapter(n),
+      onChapterDraft: (f, val) => this.onChapterDraft(f, val),
+      onCommitChapter: () => this.commitEditChapter(),
+      onCancelChapter: () => this.cancelEditChapter(),
+      onDeleteChapter: (n) => this.deleteChapter(n),
+      onMoveChapter: (n, dir) => this.moveChapter(n, dir),
+      onToggleChapterPrologue: (n) => this.toggleChapterPrologue(n),
+      onResetChapterAuto: (n) => this.resetChapterAuto(n),
       rowVals,
       hasDetail: !!detail, noDetail: !detail,
       detail: detail || {},
@@ -672,10 +892,10 @@ export default class PlotBoard extends React.Component {
                 onChange={v.onNameDraft}
                 onBlur={v.onCommitName}
                 onKeyDown={(e) => { if (e.key === "Enter") v.onCommitName(); if (e.key === "Escape") v.onCancelName(); }}
-                style={sty("font-family:'Cormorant Garamond',serif;font-weight:600;font-size:25px;letter-spacing:.3px;color:#233029;background:#fffdf3;border:1px solid #2f6e62;border-radius:2px;padding:0 6px;outline:none;")}
+                style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:25px;letter-spacing:.3px;color:#233029;background:#fffdf3;border:1px solid #2f6e62;border-radius:2px;padding:0 6px;outline:none;")}
               />
             ) : (
-              <h1 onClick={v.onStartRename} title="Click to rename this project" style={sty("font-family:'Cormorant Garamond',serif;font-weight:600;font-size:25px;margin:0;letter-spacing:.3px;cursor:text;")}>{v.projectName}</h1>
+              <h1 onClick={v.onStartRename} title="Click to rename this project" style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:25px;margin:0;letter-spacing:.3px;cursor:text;")}>{v.projectName}</h1>
             )}
             <p style={sty("margin:3px 0 0;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#5c6b5f;letter-spacing:.02em;")}>{v.editionSub}</p>
           </div>
@@ -701,7 +921,7 @@ export default class PlotBoard extends React.Component {
                   </div>
                   <div style={sty("display:flex;align-items:center;gap:9px;margin-bottom:13px;padding:9px 11px;border:1px solid #b99a6b;border-radius:2px;background:#fbf7e6;")}>
                     <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;color:#233029;")}>Now:</span>
-                    <span style={sty("font-family:'Cormorant Garamond',serif;font-size:16px;font-weight:600;color:#233029;flex:1;")}>{v.lastVerName}</span>
+                    <span style={sty("font-family:'Sorts Mill Goudy',serif;font-size:16px;font-weight:400;color:#233029;flex:1;")}>{v.lastVerName}</span>
                     {v.dirty && <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:9px;color:#b58a2e;")}>edited</span>}
                   </div>
                   <div style={sty("display:flex;gap:7px;margin-bottom:14px;")}>
@@ -715,7 +935,7 @@ export default class PlotBoard extends React.Component {
                       <div key={ver.id} style={sty(ver.rowStyle)}>
                         <div style={sty("flex:1;min-width:0;")}>
                           <div style={sty("display:flex;align-items:center;gap:6px;")}>
-                            <span style={sty("font-family:'Cormorant Garamond',serif;font-size:16px;font-weight:600;color:#233029;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;")}>{ver.name}</span>
+                            <span style={sty("font-family:'Sorts Mill Goudy',serif;font-size:16px;font-weight:400;color:#233029;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;")}>{ver.name}</span>
                             {ver.isCurrent && <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.05em;color:#2f6e62;border:1px solid #2f6e62;border-radius:2px;padding:1px 4px;")}>CURRENT</span>}
                           </div>
                           <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9px;color:#5c6b5f;margin-top:2px;")}>{ver.when}</div>
@@ -733,6 +953,7 @@ export default class PlotBoard extends React.Component {
 
         <div style={sty("display:flex;align-items:center;gap:10px;padding:8px 20px;border-bottom:1px solid #b99a6b;background:#efe8d0;flex:0 0 auto;")}>
           <button onClick={v.onAddBlock} style={sty(v.addBtn)}>＋ Add block</button>
+          <button onClick={v.onAddChapter} style={sty(v.connectBtn)}>＋ Add chapter</button>
           <button onClick={v.onToggleConnect} style={sty(v.connectBtn)}>⤳ Connect blocks</button>
           <button onClick={v.onUndo} disabled={v.noUndo} style={sty(v.undoBtn)}>↶ Undo</button>
           <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;color:#8a6a1e;")}>{v.connectHint}</span>
@@ -744,9 +965,60 @@ export default class PlotBoard extends React.Component {
             <div style={sty("min-width:max-content;")}>
               <div style={sty("display:flex;position:sticky;top:0;z-index:7;")}>
                 <div style={sty("width:190px;flex:0 0 190px;position:sticky;left:0;z-index:8;background:#eae3cc;border-right:2px solid #6e4a2e;border-bottom:2px solid #6e4a2e;")}></div>
-                {v.chapters.map((col, i) => (
-                  <div key={i} style={sty("width:184px;flex:0 0 184px;padding:8px 22px 9px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5c6b5f;border-left:1px solid #b99a6b;border-bottom:2px solid #6e4a2e;background:#eae3cc;")}>
-                    <b style={sty("display:block;color:#233029;font-size:11.5px;font-weight:500;")}>{col.label}</b>{col.title}
+                {v.chapters.map((col) => (
+                  <div key={col.n} style={sty("width:184px;flex:0 0 184px;padding:8px 22px 9px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#5c6b5f;border-left:1px solid #b99a6b;border-bottom:2px solid #6e4a2e;background:#eae3cc;position:relative;")}>
+                    <div onClick={() => v.onStartEditChapter(col.n)} title="Edit chapter" style={sty("cursor:pointer;")}>
+                      <b style={sty("display:block;color:#233029;font-size:11.5px;font-weight:500;")}>
+                        {col.label}
+                        {col.prologue && <span style={sty("margin-left:5px;font-weight:400;font-size:8px;letter-spacing:.04em;color:#8a6a1e;border:1px solid #b58a2e;border-radius:2px;padding:0 3px;")}>PRO</span>}
+                      </b>
+                      {col.title || <span style={sty("color:#a89877;font-style:italic;")}>untitled</span>}
+                    </div>
+                    {col.editing && (
+                      <div style={sty("position:absolute;left:0;top:calc(100% + 4px);z-index:40;width:232px;background:#efe8d0;border:1px solid #6e4a2e;border-radius:3px;box-shadow:0 14px 34px rgba(60,40,20,.28);padding:12px;display:flex;flex-direction:column;gap:9px;")}>
+                        <div style={sty("display:flex;flex-direction:column;gap:3px;")}>
+                          <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;")}>Label</span>
+                          <input
+                            autoFocus
+                            value={v.chapterDraft.label || ""}
+                            onChange={(e) => v.onChapterDraft("label", e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") v.onCommitChapter(); if (e.key === "Escape") v.onCancelChapter(); }}
+                            placeholder="e.g. Ch 1"
+                            style={sty("font-family:'IBM Plex Mono',monospace;font-size:11px;color:#233029;background:#fffdf3;border:1px solid #b99a6b;border-radius:2px;padding:5px 7px;outline:none;")}
+                          />
+                        </div>
+                        <div style={sty("display:flex;flex-direction:column;gap:3px;")}>
+                          <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;")}>Title</span>
+                          <input
+                            value={v.chapterDraft.title || ""}
+                            onChange={(e) => v.onChapterDraft("title", e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") v.onCommitChapter(); if (e.key === "Escape") v.onCancelChapter(); }}
+                            placeholder="Chapter title"
+                            style={sty("font-family:'Source Serif 4',serif;font-size:12.5px;color:#233029;background:#fffdf3;border:1px solid #b99a6b;border-radius:2px;padding:5px 7px;outline:none;")}
+                          />
+                        </div>
+                        <label style={sty("display:flex;align-items:center;gap:7px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#233029;cursor:pointer;")}>
+                          <input type="checkbox" checked={col.prologue} onChange={() => v.onToggleChapterPrologue(col.n)} />
+                          Prologue (not numbered)
+                        </label>
+                        {!col.labelAuto && (
+                          <button onClick={() => v.onResetChapterAuto(col.n)} style={sty("align-self:flex-start;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:2px 6px;cursor:pointer;border:1px dashed #6e4a2e;border-radius:2px;background:transparent;color:#6e4a2e;")}>↺ Auto-number this</button>
+                        )}
+                        <div style={sty("display:flex;gap:6px;")}>
+                          <button onClick={() => v.onInsertChapter(col.index)} style={sty("flex:1;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:4px 5px;cursor:pointer;border:1px solid #6e4a2e;border-radius:2px;background:#f7f2de;color:#233029;")}>＋ Before</button>
+                          <button onClick={() => v.onInsertChapter(col.index + 1)} style={sty("flex:1;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:4px 5px;cursor:pointer;border:1px solid #6e4a2e;border-radius:2px;background:#f7f2de;color:#233029;")}>After ＋</button>
+                        </div>
+                        <div style={sty("display:flex;gap:6px;align-items:center;")}>
+                          <button onClick={() => v.onMoveChapter(col.n, -1)} disabled={col.index === 0} style={sty("font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 9px;cursor:pointer;border:1px solid #6e4a2e;border-radius:2px;background:#f7f2de;color:" + (col.index === 0 ? "#b0a487" : "#233029") + ";")}>◂</button>
+                          <button onClick={() => v.onMoveChapter(col.n, 1)} disabled={col.index === v.chapterCount - 1} style={sty("font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 9px;cursor:pointer;border:1px solid #6e4a2e;border-radius:2px;background:#f7f2de;color:" + (col.index === v.chapterCount - 1 ? "#b0a487" : "#233029") + ";")}>▸</button>
+                          <button onClick={() => v.onDeleteChapter(col.n)} disabled={!v.canDeleteChapter} style={sty("margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:4px 8px;cursor:pointer;border:1px solid #b23a2e;border-radius:2px;background:transparent;color:" + (v.canDeleteChapter ? "#b23a2e" : "#d0a89e") + ";")}>✕ Delete</button>
+                        </div>
+                        <div style={sty("display:flex;gap:6px;border-top:1px solid #d8ceb0;padding-top:9px;")}>
+                          <button onClick={v.onCommitChapter} style={sty("flex:1;font-family:'IBM Plex Mono',monospace;font-size:10px;padding:5px 6px;cursor:pointer;border:1px solid #2f6e62;border-radius:2px;background:#2f6e62;color:#f6f2e2;")}>Done</button>
+                          <button onClick={v.onCancelChapter} style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;padding:5px 9px;cursor:pointer;border:1px solid #b99a6b;border-radius:2px;background:transparent;color:#5c6b5f;")}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -755,9 +1027,60 @@ export default class PlotBoard extends React.Component {
                 {v.rowVals.map((row) => (
                   <div key={row.key} style={sty("display:flex;border-bottom:1px solid #b99a6b;position:relative;z-index:1;")}>
                     <div style={sty(row.labelStyle)}>
-                      <b style={sty("font-family:'Cormorant Garamond',serif;font-weight:600;font-size:18px;line-height:1.05;")}>{row.label}</b>
-                      {row.hasNote && <small style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#5c6b5f;margin-top:2px;")}>{row.note}</small>}
-                      <span style={sty("margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#2f6e62;")}>{row.tally}</span>
+                      {row.editing ? (
+                        <div style={sty("display:flex;flex-direction:column;gap:6px;")}>
+                          <input
+                            autoFocus
+                            value={v.rowDraft.label || ""}
+                            onChange={(e) => v.onRowDraft("label", e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") v.onCommitRow(); if (e.key === "Escape") v.onCancelRow(); }}
+                            placeholder="Name"
+                            style={sty("font-family:'Sorts Mill Goudy',serif;font-size:16px;color:#233029;background:#fffdf3;border:1px solid #2f6e62;border-radius:2px;padding:3px 6px;outline:none;")}
+                          />
+                          <div style={sty("display:flex;gap:6px;align-items:flex-start;")}>
+                            <input
+                              value={v.rowDraft.mark || ""}
+                              onChange={(e) => v.onRowDraft("mark", e.target.value.slice(0, 3))}
+                              onKeyDown={(e) => { if (e.key === "Enter") v.onCommitRow(); if (e.key === "Escape") v.onCancelRow(); }}
+                              placeholder="Aa"
+                              style={sty("width:38px;flex:0 0 auto;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#233029;background:#fffdf3;border:1px solid #b99a6b;border-radius:2px;padding:3px 4px;outline:none;")}
+                            />
+                            <div style={sty("display:flex;flex-wrap:wrap;gap:3px;")}>
+                              {v.rowPalette.map((c) => (
+                                <button
+                                  key={c}
+                                  onClick={() => v.onRowDraft("color", c)}
+                                  title={c}
+                                  style={sty("width:15px;height:15px;border-radius:50%;cursor:pointer;padding:0;background:" + c + ";border:" + (v.rowDraft.color === c ? "2px solid #233029" : "1px solid rgba(0,0,0,.2)") + ";")}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                          <input
+                            value={v.rowDraft.note || ""}
+                            onChange={(e) => v.onRowDraft("note", e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") v.onCommitRow(); if (e.key === "Escape") v.onCancelRow(); }}
+                            placeholder="Note (optional)"
+                            style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#5c6b5f;background:#fffdf3;border:1px solid #b99a6b;border-radius:2px;padding:3px 5px;outline:none;")}
+                          />
+                          <div style={sty("display:flex;gap:6px;")}>
+                            <button onClick={v.onCommitRow} style={sty("flex:1;font-family:'IBM Plex Mono',monospace;font-size:10px;padding:4px 6px;cursor:pointer;border:1px solid #2f6e62;border-radius:2px;background:#2f6e62;color:#f6f2e2;")}>Done</button>
+                            <button onClick={v.onCancelRow} style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;padding:4px 8px;cursor:pointer;border:1px solid #b99a6b;border-radius:2px;background:transparent;color:#5c6b5f;")}>Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <b style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:18px;line-height:1.05;" + (row.unassigned ? "font-style:italic;color:#8a5a3a;" : ""))}>{row.label}</b>
+                          {row.hasNote && <small style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#5c6b5f;margin-top:2px;")}>{row.note}</small>}
+                          <span style={sty("margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#2f6e62;")}>{row.tally}</span>
+                          {!row.unassigned && (
+                            <div style={sty("display:flex;gap:6px;margin-top:6px;")}>
+                              <button onClick={() => v.onStartEditRow(row.key)} title="Edit row" style={sty("font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 7px;cursor:pointer;border:1px solid #6e4a2e;border-radius:2px;background:transparent;color:#6e4a2e;")}>✎ Edit</button>
+                              <button onClick={() => v.onDeleteRow(row.key)} title="Delete row" style={sty("font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 7px;cursor:pointer;border:1px solid #b23a2e;border-radius:2px;background:transparent;color:#b23a2e;")}>✕</button>
+                            </div>
+                          )}
+                        </>
+                      )}
                     </div>
                     <div style={sty("display:flex;position:relative;")}>
                       {row.showThread && <div style={sty("position:absolute;left:0;right:0;top:50%;height:0;border-top:1.5px dotted #c9b98a;pointer-events:none;z-index:0;")}></div>}
@@ -808,7 +1131,7 @@ export default class PlotBoard extends React.Component {
                 ))}
                 <div style={sty("display:flex;position:relative;z-index:5;")}>
                   <div style={sty("width:190px;flex:0 0 190px;padding:10px 12px;position:sticky;left:0;background:#eae3cc;border-right:2px solid #6e4a2e;")}>
-                    <button style={sty("width:100%;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.02em;color:#6e4a2e;background:transparent;border:1px dashed #6e4a2e;border-radius:2px;padding:8px 9px;cursor:pointer;text-align:left;")}>{v.addRowLabel}</button>
+                    <button onClick={v.onAddRow} style={sty("width:100%;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.02em;color:#6e4a2e;background:transparent;border:1px dashed #6e4a2e;border-radius:2px;padding:8px 9px;cursor:pointer;text-align:left;")}>{v.addRowLabel}</button>
                   </div>
                 </div>
               </div>
@@ -832,7 +1155,7 @@ export default class PlotBoard extends React.Component {
                   </div>
                   <button onClick={v.clearSel} style={sty("border:1px solid #b99a6b;background:transparent;color:#5c6b5f;width:24px;height:24px;border-radius:2px;cursor:pointer;font-size:13px;line-height:1;flex:0 0 auto;")}>✕</button>
                 </div>
-                <p style={sty("font-family:'Cormorant Garamond',serif;font-weight:500;font-size:21px;line-height:1.28;margin:13px 0 13px;color:#233029;")}>{d.text}</p>
+                <p style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:21px;line-height:1.28;margin:13px 0 13px;color:#233029;")}>{d.text}</p>
                 {d.hasCast && (
                   <div style={sty("display:flex;align-items:center;gap:6px;margin:0 0 13px;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#5c6b5f;")}>
                     <span>{d.castLabel}</span>
@@ -847,6 +1170,7 @@ export default class PlotBoard extends React.Component {
                 <div style={sty("display:flex;flex-direction:column;gap:10px;margin:0 0 17px;padding:13px 12px;border:1px solid #b99a6b;border-radius:2px;background:rgba(110,74,46,.045);")}>
                   <div style={sty("font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:#5c6b5f;")}>{d.assignLabel}</div>
                   <select value={d.rowKey} onChange={d.onAssign} style={sty(d.selectStyle)}>
+                    {d.homeUnassigned && <option value="" disabled>— Unassigned —</option>}
                     {d.rowOptions.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
                   </select>
                   <button onClick={d.onConnectFrom} style={sty(d.connectBtnStyle)}>{d.connectLabel}</button>

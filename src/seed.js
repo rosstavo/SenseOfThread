@@ -122,10 +122,14 @@ export function buildSeedDoc() {
 // An empty scaffold for a brand-new project: generic chapters + starter rows,
 // no moments. Gives the User a board to build on without pre-filled content.
 export function buildBlankDoc(name) {
+  // labelAuto lets the board re-number these ("Ch 1", "Ch 2", …) as chapters
+  // are added/removed or the first is marked a prologue. The seed R&J chapters
+  // keep hand-authored labels (no labelAuto), so only new projects auto-number.
   const chapters = Array.from({ length: 6 }, (_, i) => ({
     n: i + 1,
     label: "Ch " + (i + 1),
-    title: "Chapter " + (i + 1),
+    title: "",
+    labelAuto: true,
   }));
   return {
     name: (name || "").trim() || "Untitled project",
