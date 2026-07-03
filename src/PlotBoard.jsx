@@ -64,6 +64,9 @@ export default class PlotBoard extends React.Component {
       writeTick: 0,
       connectMode: false,
       connectFrom: null,
+      placing: false,      // "Add block" placement mode — pick a cell to drop the new block into
+      placingCh: null,     // chapter (column) currently hovered while placing
+      placingRk: null,     // row key currently hovered while placing
       menuOpen: false,
       blockMenu: false,
       versions: [],
@@ -86,6 +89,9 @@ export default class PlotBoard extends React.Component {
   componentDidMount() {
     this._draw = () => this.drawArrows();
     window.addEventListener("resize", this._draw);
+    // Escape backs out of placement mode.
+    this._onKey = (e) => { if (e.key === "Escape" && this.state.placing) this.cancelPlacing(); };
+    window.addEventListener("keydown", this._onKey);
     this.forceUpdate();
     this.scheduleDraw();
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => this.drawArrows());
@@ -100,6 +106,7 @@ export default class PlotBoard extends React.Component {
   }
   componentWillUnmount() {
     window.removeEventListener("resize", this._draw);
+    window.removeEventListener("keydown", this._onKey);
     if (this._ro) this._ro.disconnect();
     clearTimeout(this._saveTimer);
     if (this._needSave) this.flushSave(); // don't lose the last edit on unmount
@@ -169,7 +176,7 @@ export default class PlotBoard extends React.Component {
     this.setState((s) => ({ selected: s.selected === id ? null : id, blockMenu: false, editingText: false }));
   }
   toggleBlockMenu() { this.setState((s) => ({ blockMenu: !s.blockMenu })); }
-  toggleConnect() { this.setState((s) => ({ connectMode: !s.connectMode, connectFrom: null })); }
+  toggleConnect() { this.setState((s) => ({ connectMode: !s.connectMode, connectFrom: null, placing: false, placingCh: null, placingRk: null })); }
   startConnect(id) { this.setState({ connectMode: true, connectFrom: id }); }
   addDependency(a, b) {
     const ma = (this.moments || []).find((m) => m.id === a);
@@ -190,24 +197,39 @@ export default class PlotBoard extends React.Component {
     t.deps = t.deps.filter((d) => d !== depId);
     this.setState({ dirty: true });
   }
-  addBlock() {
+  // "Add block" no longer drops straight into the top-left cell. Instead it
+  // arms a placement mode: the board highlights the column/cell under the
+  // cursor and shows a ＋ target, and the block lands wherever the user clicks
+  // (see placeBlock). Toggle it off if it's already armed.
+  startPlacing() {
+    if (!this.threads[0] || !this.characters[0]) return; // need at least one row of each axis
+    this.setState((s) => ({
+      placing: !s.placing, placingCh: null, placingRk: null,
+      connectMode: false, connectFrom: null, selected: null, blockMenu: false,
+    }));
+  }
+  cancelPlacing() { this.setState({ placing: false, placingCh: null, placingRk: null }); }
+  hoverPlace(ch, rk) {
+    if (!this.state.placing) return;
+    if (this.state.placingCh === ch && this.state.placingRk === rk) return;
+    this.setState({ placingCh: ch, placingRk: rk });
+  }
+  // Drop a fresh block into the chosen chapter (column) and row (thread/character).
+  placeBlock(ch, rowKey) {
     const firstThread = this.threads[0];
     const firstChar = this.characters[0];
     if (!firstThread || !firstChar) return; // need at least one row of each axis
-    const firstCh = this.chapters[0] ? this.chapters[0].n : 1;
-    const rowsList = this.state.view === "thread" ? this.threads : this.characters;
-    const firstRow = rowsList[0];
     const nextId = Math.max(0, ...(this.moments || []).map((m) => m.id)) + 1;
     const nm = {
-      id: nextId, ch: firstCh,
-      thread: this.state.view === "thread" ? firstRow.key : firstThread.key,
-      char: this.state.view === "character" ? firstRow.key : firstChar.key,
+      id: nextId, ch,
+      thread: this.state.view === "thread" ? rowKey : firstThread.key,
+      char: this.state.view === "character" ? rowKey : firstChar.key,
       text: "New moment — describe what the reader learns here.",
       deps: [], planned: true, coChars: [], coThreads: [],
     };
     this.pushUndo();
     (this.moments || (this.moments = [])).push(nm);
-    this.setState({ selected: nextId, dirty: true });
+    this.setState({ selected: nextId, dirty: true, placing: false, placingCh: null, placingRk: null });
   }
   assignRow(id, key) {
     if (!key) return; // "— Unassigned —" placeholder
@@ -827,6 +849,18 @@ export default class PlotBoard extends React.Component {
             onClick: () => this.select(m.id),
           };
         });
+        // Placement mode: a faint tint follows the hovered column, and the one
+        // hovered cell borrows the same green outline as the drag drop helper
+        // (see .cell.drophot in index.html) plus a ＋. Orphan/unassigned rows
+        // can't hold a home block, so they're not placement targets.
+        const placing = this.state.placing;
+        const canPlace = placing && !r.unassigned;
+        const colHot = canPlace && this.state.placingCh === c.n;
+        const cellHot = colHot && this.state.placingRk === r.key;
+        let placeStyle = "position:absolute;inset:0;z-index:6;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .12s;";
+        if (colHot) placeStyle += "background:rgba(47,110,98,.05);";
+        if (cellHot) placeStyle += "background:rgba(47,110,98,.10);box-shadow:inset 0 0 0 1.5px #2f6e62;";
+        const placePlus = "font-family:'IBM Plex Mono',monospace;display:flex;align-items:center;justify-content:center;width:28px;height:28px;font-size:16px;border-radius:50%;background:#2f6e62;color:#f6f2e2;box-shadow:0 2px 7px rgba(47,110,98,.35);";
         return {
           ch: c.n, rk: r.key,
           style: "width:184px;flex:0 0 184px;border-left:1px solid #b99a6b;padding:10px 22px;display:flex;flex-direction:column;gap:8px;justify-content:center;min-height:104px;position:relative;background:" + bg + ";",
@@ -836,6 +870,9 @@ export default class PlotBoard extends React.Component {
           onDragOver: (e) => e.preventDefault(),
           onDragEnter: this.makeDragEnter(c.n, r.key),
           onDragLeave: this.onDragLeave(),
+          canPlace, cellHot, placeStyle, placePlus,
+          onPlaceEnter: () => this.hoverPlace(c.n, r.key),
+          onPlace: () => this.placeBlock(c.n, r.key),
         };
       });
       const count = moments.filter((m) => inThisRow(m)).length;
@@ -871,7 +908,7 @@ export default class PlotBoard extends React.Component {
 
     const connectMode = this.state.connectMode, connectFrom = this.state.connectFrom;
     const toolBtn = "display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.02em;padding:6px 12px;border-radius:2px;cursor:pointer;border:1px solid #6e4a2e;";
-    const addBtn = toolBtn + "background:#2f6e62;color:#f6f2e2;border-color:#2f6e62;";
+    const addBtn = toolBtn + (this.state.placing ? "background:#b58a2e;color:#f6f2e2;border-color:#b58a2e;" : "background:#2f6e62;color:#f6f2e2;border-color:#2f6e62;");
     const connectBtn = toolBtn + (connectMode ? "background:#b58a2e;color:#f6f2e2;border-color:#b58a2e;" : "background:#f7f2de;color:#233029;");
     const canUndo = !!(this.undoStack && this.undoStack.length);
     const undoBtn = toolBtn + (canUndo ? "background:#f7f2de;color:#233029;" : "background:#f7f2de;color:#b0a487;border-color:#c9b98a;cursor:default;");
@@ -920,7 +957,10 @@ export default class PlotBoard extends React.Component {
       onToggleMenu: () => this.toggleMenu(),
       onDraftName: (e) => this.onDraftName(e),
       onSnapshot: () => this.snapshot(),
-      onAddBlock: () => this.addBlock(),
+      placing: this.state.placing,
+      addBlockLabel: this.state.placing ? "✕ Cancel placement" : "＋ Add block",
+      placeHint: this.state.placing ? "Pick a cell — click the ＋ where the block should go  ·  Esc to cancel" : "",
+      onAddBlock: () => this.startPlacing(),
       onToggleConnect: () => this.toggleConnect(),
       onLedger: () => this.setEdition("ledger"),
       onWeave: () => this.setEdition("weave"),
@@ -1040,11 +1080,11 @@ export default class PlotBoard extends React.Component {
         </header>
 
         <div style={sty("display:flex;align-items:center;gap:10px;padding:8px 20px;border-bottom:1px solid #b99a6b;background:#efe8d0;flex:0 0 auto;")}>
-          <button onClick={v.onAddBlock} style={sty(v.addBtn)}>＋ Add block</button>
+          <button onClick={v.onAddBlock} style={sty(v.addBtn)}>{v.addBlockLabel}</button>
           <button onClick={v.onAddChapter} style={sty(v.connectBtn)}>＋ Add chapter</button>
           <button onClick={v.onToggleConnect} style={sty(v.connectBtn)}>⤳ Connect blocks</button>
           <button onClick={v.onUndo} disabled={v.noUndo} style={sty(v.undoBtn)}>↶ Undo</button>
-          <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;color:#8a6a1e;")}>{v.connectHint}</span>
+          <span style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;color:#8a6a1e;")}>{v.placeHint || v.connectHint}</span>
           <span style={sty("margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#8a7a5a;")}>drag a block to re-chapter · select one to assign, connect or flag it</span>
         </div>
 
@@ -1212,6 +1252,11 @@ export default class PlotBoard extends React.Component {
                               <span style={sty("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;")}>{e.text}</span>
                             </div>
                           ))}
+                          {cell.canPlace && (
+                            <div className="place-target" onMouseEnter={cell.onPlaceEnter} onClick={cell.onPlace} style={sty(cell.placeStyle)} title="Add a block here">
+                              {cell.cellHot && <span style={sty(cell.placePlus)}>＋</span>}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
