@@ -119,6 +119,99 @@ export function buildSeedDoc() {
   };
 }
 
+// Colour palette that auto-assigned rows cycle through (mirrors ROW_PALETTE in
+// PlotBoard so onboarded rows sit alongside ones added later on the board).
+const ONBOARD_PALETTE = [
+  "#7c3b2c", "#2f6e62", "#a1863c", "#8a4a3a", "#5b6b63",
+  "#a5645a", "#6b6558", "#3a6b5b", "#9a6a2c", "#4a5b8a",
+];
+
+// "The Feud" -> "TF", "Romeo" -> "Ro". Mirrors markFromLabel in PlotBoard;
+// duplicated here so seeding can assign a pip badge without importing the board.
+function markFromLabel(label) {
+  const words = String(label || "").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "?";
+  if (words.length === 1) return words[0].slice(0, 2);
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+// Turn a list of typed names into board rows with a stable unique key and an
+// auto-assigned colour + mark. Blank entries are dropped; duplicate keys get a
+// numeric suffix so the board can address each row unambiguously.
+function rowsFromNames(names) {
+  const used = new Set();
+  return (names || [])
+    .map((s) => String(s || "").trim())
+    .filter(Boolean)
+    .map((label, i) => {
+      let base =
+        label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") ||
+        "row-" + (i + 1);
+      let key = base;
+      let n = 2;
+      while (used.has(key)) key = base + "-" + n++;
+      used.add(key);
+      return {
+        key,
+        label,
+        note: "",
+        color: ONBOARD_PALETTE[i % ONBOARD_PALETTE.length],
+        mark: markFromLabel(label),
+      };
+    });
+}
+
+// Build a project from the new-project onboarding answers. Chapters are
+// auto-numbered "Ch 1", "Ch 2", … (labelAuto, so the board re-numbers them as
+// they're edited); an optional prologue is prepended as a labelAuto/prologue
+// chapter that the running counter skips. Characters and threads come straight
+// from the typed lists, with colours and marks assigned automatically. No
+// moments yet — the User fills the board in.
+export function buildOnboardedDoc({
+  name,
+  chapters: chapterCount,
+  prologue,
+  characters,
+  threads,
+} = {}) {
+  const count = Math.max(1, Math.floor(Number(chapterCount) || 1));
+  const chapters = [];
+  if (prologue) {
+    chapters.push({ n: 1, label: "Prologue", title: "", labelAuto: true, prologue: true });
+  }
+  for (let i = 0; i < count; i++) {
+    chapters.push({ n: chapters.length + 1, label: "", title: "", labelAuto: true });
+  }
+  // Assign "Ch 1", "Ch 2", … to the numbered chapters (prologue is skipped).
+  let k = 0;
+  chapters.forEach((c) => {
+    if (c.prologue) return;
+    k += 1;
+    c.label = "Ch " + k;
+  });
+
+  const threadRows = rowsFromNames(threads);
+  const charRows = rowsFromNames(characters);
+
+  return {
+    name: String(name || "").trim() || "Untitled project",
+    chapters,
+    // A board needs at least one row in each view to be usable; fall back to a
+    // single generic row only when the User listed none.
+    threads: threadRows.length
+      ? threadRows
+      : [{ key: "main", label: "Main Plot", note: "the through-line", color: "#7c3b2c", mark: "A" }],
+    characters: charRows.length
+      ? charRows
+      : [{ key: "protagonist", label: "Protagonist", note: "", color: "#7c3b2c", mark: "P1" }],
+    moments: [],
+    written: [],
+    view: "thread",
+    edition: "ledger",
+    lastVerName: "",
+  };
+}
+
 // An empty scaffold for a brand-new project: generic chapters + starter rows,
 // no moments. Gives the User a board to build on without pre-filled content.
 export function buildBlankDoc(name) {

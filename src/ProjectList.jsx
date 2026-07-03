@@ -5,8 +5,9 @@ import {
   renameProject,
   deleteProject,
 } from "./storage.js";
-import { buildBlankDoc } from "./seed.js";
+import { buildOnboardedDoc } from "./seed.js";
 import { signOut } from "./authService.js";
+import NewProjectOnboarding from "./NewProjectOnboarding.jsx";
 
 // The project shelf: every Project the User owns, newest-modified first, with
 // create / rename / delete. Selecting a card opens that Project's board (App
@@ -36,6 +37,8 @@ export default function ProjectList({ user, onOpen }) {
   const [busy, setBusy] = useState(false);
   const [renaming, setRenaming] = useState(null); // project id
   const [renameText, setRenameText] = useState("");
+  const [onboarding, setOnboarding] = useState(false); // new-project flow open
+  const [onboardError, setOnboardError] = useState("");
 
   async function refresh() {
     setError("");
@@ -54,17 +57,23 @@ export default function ProjectList({ user, onOpen }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.uid]);
 
-  async function onCreate() {
+  function openOnboarding() {
+    setOnboardError("");
+    setOnboarding(true);
+  }
+
+  // Called by the onboarding flow with the collected answers. Builds the
+  // project doc, persists it, and opens the new board.
+  async function onCreate(answers) {
     if (busy) return;
     setBusy(true);
-    setError("");
+    setOnboardError("");
     try {
-      const name = "Untitled project";
-      const id = await createProject(user.uid, buildBlankDoc(name));
+      const id = await createProject(user.uid, buildOnboardedDoc(answers));
       onOpen(id);
     } catch (err) {
       console.error(err);
-      setError("Could not create the project. Try again.");
+      setOnboardError("Could not create the project. Try again.");
       setBusy(false);
     }
   }
@@ -130,7 +139,7 @@ export default function ProjectList({ user, onOpen }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button
-            onClick={onCreate}
+            onClick={openOnboarding}
             disabled={busy}
             style={{
               fontFamily: mono,
@@ -328,6 +337,17 @@ export default function ProjectList({ user, onOpen }) {
             })}
         </div>
       </div>
+
+      {onboarding && (
+        <NewProjectOnboarding
+          busy={busy}
+          error={onboardError}
+          onCancel={() => {
+            if (!busy) setOnboarding(false);
+          }}
+          onCreate={onCreate}
+        />
+      )}
     </div>
   );
 }
