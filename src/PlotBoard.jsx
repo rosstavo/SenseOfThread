@@ -76,6 +76,8 @@ export default class PlotBoard extends React.Component {
       nameDraft: "",
       editingRow: null,   // key of the thread/character row being edited inline
       rowDraft: {},        // { label, note, color, mark } while editing a row
+      editingText: false, // whether the selected block's text is being edited
+      textDraft: "",       // working copy of the block text while editing
       editingChapter: null, // n of the chapter whose editor popover is open
       chapterDraft: {},     // { label, title } while editing a chapter
     };
@@ -164,7 +166,7 @@ export default class PlotBoard extends React.Component {
       this.setState({ connectMode: false, connectFrom: null });
       return;
     }
-    this.setState((s) => ({ selected: s.selected === id ? null : id, blockMenu: false }));
+    this.setState((s) => ({ selected: s.selected === id ? null : id, blockMenu: false, editingText: false }));
   }
   toggleBlockMenu() { this.setState((s) => ({ blockMenu: !s.blockMenu })); }
   toggleConnect() { this.setState((s) => ({ connectMode: !s.connectMode, connectFrom: null })); }
@@ -490,6 +492,24 @@ export default class PlotBoard extends React.Component {
     if (this._needSave) this.flushSave();
     if (this.props.onExit) this.props.onExit();
   }
+  // --- block text (inline edit in the sidebar) ----------------------------
+  startEditText() {
+    const m = (this.moments || []).find((x) => x.id === this.state.selected);
+    if (!m) return;
+    this.setState({ editingText: true, textDraft: m.text || "", blockMenu: false });
+  }
+  onTextDraft(e) { const v = e.target.value; this.setState({ textDraft: v }); }
+  commitEditText() {
+    const m = (this.moments || []).find((x) => x.id === this.state.selected);
+    this.setState({ editingText: false });
+    if (!m) return;
+    const text = (this.state.textDraft || "").trim();
+    if (!text || text === m.text) return; // blank keeps the current text
+    this.pushUndo();
+    m.text = text;
+    this.setState({ dirty: true });
+  }
+  cancelEditText() { this.setState({ editingText: false }); }
   deleteBlock(id) {
     if (!this.moments) return;
     this.pushUndo();
@@ -612,6 +632,13 @@ export default class PlotBoard extends React.Component {
       chLabel: this.chInfo(m.ch),
       rowLabel: (this.state.view === "thread" ? "Thread · " : "Arc · ") + (r ? r.label : "Unassigned"),
       text: m.text, upstream: up, downstream: down,
+      // --- inline text editing ----------------------------------------------
+      editingText: !!this.state.editingText,
+      textDraft: this.state.textDraft || "",
+      onStartEditText: () => this.startEditText(),
+      onTextDraft: (e) => this.onTextDraft(e),
+      onCommitText: () => this.commitEditText(),
+      onCancelText: () => this.cancelEditText(),
       noUp: up.length === 0, noDown: down.length === 0,
       hasBreak,
       breakMsg: "This lands before something it relies on — the reader won't have that yet. Move it later, or move the setup earlier.",
@@ -1228,7 +1255,26 @@ export default class PlotBoard extends React.Component {
                   </div>
                 )}
 
-                <p style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:21px;line-height:1.28;margin:13px 0 15px;color:#233029;")}>{d.text}</p>
+                {d.editingText ? (
+                  <div style={sty("margin:13px 0 15px;display:flex;flex-direction:column;gap:6px;")}>
+                    <textarea
+                      autoFocus
+                      value={d.textDraft}
+                      onChange={d.onTextDraft}
+                      onKeyDown={(e) => { if (e.key === "Escape") d.onCancelText(); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) d.onCommitText(); }}
+                      rows={3}
+                      placeholder="Describe what the reader learns in this moment…"
+                      style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:21px;line-height:1.28;color:#233029;background:#fffdf3;border:1px solid #2f6e62;border-radius:2px;padding:7px 9px;outline:none;resize:vertical;")}
+                    />
+                    <div style={sty("display:flex;gap:6px;align-items:center;")}>
+                      <button onClick={d.onCommitText} style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;padding:5px 11px;cursor:pointer;border:1px solid #2f6e62;border-radius:2px;background:#2f6e62;color:#f6f2e2;")}>Done</button>
+                      <button onClick={d.onCancelText} style={sty("font-family:'IBM Plex Mono',monospace;font-size:10px;padding:5px 9px;cursor:pointer;border:1px solid #b99a6b;border-radius:2px;background:transparent;color:#5c6b5f;")}>Cancel</button>
+                      <span style={sty("margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#8a7a5a;")}>⌘↵ to save · esc to cancel</span>
+                    </div>
+                  </div>
+                ) : (
+                  <p onClick={d.onStartEditText} title="Click to edit this moment" style={sty("font-family:'Sorts Mill Goudy',serif;font-weight:400;font-size:21px;line-height:1.28;margin:13px 0 15px;color:#233029;cursor:text;")}>{d.text}</p>
+                )}
 
                 <div style={sty(d.statusSegWrap)}>
                   {d.statusSegs.map((s) => (
