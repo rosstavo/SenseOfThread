@@ -330,10 +330,10 @@ export default function AuthScreen() {
                 }}
             >
                 <div>
-                    This app was built with the help of AI. There are no AI
-                    features in this app. Writing is a sacred pursuit and takes
-                    effort, and if you want to shortcut that with AI, then maybe
-                    pick a different hobby. Lots of love, Ross ❤️
+                    This app was built by AI. There are no AI features in this
+                    app. You do you, but it is my position that with writing,
+                    the juice is worth the squeeze. Embrace effort. Make
+                    something imperfect. Lots of love, Ross ❤️
                 </div>
                 <div style={{ marginTop: 6 }}>
                     <a
