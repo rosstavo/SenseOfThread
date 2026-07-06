@@ -61,6 +61,7 @@ export default class PlotBoard extends React.Component {
       view: p.view === "character" ? "character" : "thread",
       edition: p.edition === "weave" ? "weave" : "ledger",
       selected: null,
+      marginHidden: false, // The Margin shows on first load; hides once a block is deselected
       writeTick: 0,
       connectMode: false,
       connectFrom: null,
@@ -173,7 +174,10 @@ export default class PlotBoard extends React.Component {
       this.setState({ connectMode: false, connectFrom: null });
       return;
     }
-    this.setState((s) => ({ selected: s.selected === id ? null : id, blockMenu: false, editingText: false }));
+    this.setState((s) => {
+      const deselecting = s.selected === id;
+      return { selected: deselecting ? null : id, marginHidden: deselecting, blockMenu: false, editingText: false };
+    });
   }
   toggleBlockMenu() { this.setState((s) => ({ blockMenu: !s.blockMenu })); }
   toggleConnect() { this.setState((s) => ({ connectMode: !s.connectMode, connectFrom: null, placing: false, placingCh: null, placingRk: null })); }
@@ -966,7 +970,7 @@ export default class PlotBoard extends React.Component {
       onWeave: () => this.setEdition("weave"),
       onThread: () => this.setView("thread"),
       onChar: () => this.setView("character"),
-      clearSel: () => this.setState({ selected: null }),
+      clearSel: () => this.setState({ selected: null, marginHidden: true }),
       // row (thread / character) editing
       onAddRow: () => this.addRow(),
       rowDraft: this.state.rowDraft || {},
@@ -997,6 +1001,7 @@ export default class PlotBoard extends React.Component {
       onResetChapterAuto: (n) => this.resetChapterAuto(n),
       rowVals,
       hasDetail: !!detail, noDetail: !detail,
+      showMargin: !!detail || !this.state.marginHidden,
       detail: detail || {},
     };
   }
@@ -1271,6 +1276,7 @@ export default class PlotBoard extends React.Component {
             </div>
           </div>
 
+          {v.showMargin && (
           <aside style={sty("width:292px;flex:0 0 292px;border-left:2px solid #6e4a2e;background:#efe8d0;display:flex;flex-direction:column;overflow:auto;")}>
             {v.noDetail && (
               <div style={sty("padding:22px 20px;")}>
@@ -1377,6 +1383,7 @@ export default class PlotBoard extends React.Component {
               </div>
             )}
           </aside>
+          )}
         </div>
       </div>
     );
